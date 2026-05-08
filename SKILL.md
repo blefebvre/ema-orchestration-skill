@@ -48,14 +48,14 @@ Wait for explicit confirmation before continuing.
 
 ### Confirm 2: Clear EMA Chat Context
 
-Ask the user:
-> "Does the EMA chat have any previous conversation context? If so, please clear it before we start — previous context can interfere with the migration instructions. Let me know when the chat is clean."
+**Do not clear the chat automatically** — previous context may contain work the user wants to keep. Instead, navigate to `{ema-base}chat/code/files` and take a screenshot. If the chat shows any previous conversation (i.e. it is not showing the "Welcome" state), ask the user:
+> "The EMA chat has existing context. Should I clear it before we start? This cannot be undone."
 
-Wait for explicit confirmation before continuing.
+Wait for explicit confirmation before clearing. If the chat is already in the "Welcome" state, proceed without asking.
 
 ### Check 3: EMA Login (automated)
 
-Navigate to {ema-base} and confirm the user is signed in (avatar/user menu visible in top-right banner).
+Navigate to `{ema-base}` and confirm the user is signed in (avatar/user menu visible in top-right banner).
 
 ```bash
 playwright-cli tab-list
@@ -68,7 +68,7 @@ If the page shows a login screen, ask the user to sign in and wait. Do not proce
 
 ### Check 4: GitHub Connected (automated)
 
-Navigate to {ema-base}settings and snapshot the page.
+Navigate to `{ema-base}settings` and snapshot the page.
 
 Look for the GitHub section under **Project**:
 - Green indicator dot next to the GitHub username → connected ✓
@@ -82,175 +82,249 @@ From the settings snapshot, read:
 - **GitHub username** (e.g., `blefebvre`)
 - **Project** link (e.g., `blefebvre/kr-april-30`)
 - **Preview URL** from the Support section (e.g., `https://main--kr-april-30--blefebvre.aem.page`)
+- **Library URL** — note if this is empty (see note below)
 
 Store these values — you'll need them for QA comparison later.
+
+> **Library URL note:** If the Library URL field is empty, EMA will fall back to WKND block examples when generating parsers. This is acceptable but means parsers are generated without knowledge of the project's specific block conventions. Flag this to the user after the migration completes — setting a sidekick library URL will improve future parser quality.
 
 ---
 
 ## Phase 1: Launch Migration
 
-### Step 1.1: Navigate to the Migrate/Home view
+### Step 1.1: Navigate to the chat view
+
+The migration prompt is entered at `{ema-base}chat/code/files` — not the home page. Navigate there directly:
 
 ```bash
-playwright-cli goto --tab=<ema-tab> {ema-base}
-# Or click the Home nav link if already on the app
+playwright-cli goto --tab=<ema-tab> {ema-base}chat/code/files
 ```
 
-Snapshot the page and identify the URL input field and the migrate/start button.
+Snapshot the page. You should see:
+- A chat input at the bottom ("Type a message...")
+- A file browser panel on the right showing the project repo structure
+- The "Welcome" message if no prior chat context exists
 
-### Step 1.2: Enter the Source URL
+### Step 1.2: Send the migration prompt
 
-Fill the URL input with the provided source URL:
+Fill the chat input and send:
 
 ```bash
-playwright-cli fill --tab=<ema-tab> <url-input-ref> "<source-url>"
+playwright-cli snapshot --tab=<ema-tab>
+# Find the chat input ref (typically "Chat message input")
+playwright-cli fill --tab=<ema-tab> <chat-input-ref> "Migrate this page <source-url> to Edge Delivery Services"
+playwright-cli snapshot --tab=<ema-tab>
+# Find the "Send message" button ref
+playwright-cli click --tab=<ema-tab> <send-button-ref>
 ```
 
-Re-snapshot to confirm the value is set correctly.
-
-### Step 1.3: Start the Migration
-
-Click the migrate/start button:
-
-```bash
-playwright-cli click --tab=<ema-tab> <start-button-ref>
-```
-
-Take a screenshot to confirm migration has begun. Note any job ID or task ID shown in the UI — this may be needed for later status checks.
+Always re-snapshot before clicking send — refs change after fill.
 
 ---
 
 ## Phase 2: Monitor Migration Progress
 
-The EMA runs several sub-tasks: parsing, transformation, block generation, styles, navigation, footer. Monitor the UI for progress indicators.
+EMA runs a structured 7-task pipeline. Each task has multiple sub-tasks that expand dynamically as EMA discovers more work. The full pipeline typically takes 8–15 minutes end-to-end.
 
-### Polling Loop
+### Known Task Pipeline
 
-Every 15–30 seconds, snapshot the page and check:
-- Progress bars, step indicators, or log entries
-- Any error banners or warnings
-- Whether the migration has completed (a "View result", "Preview", or "Done" state)
+Based on observed runs, the 7 top-level tasks are:
+
+| # | Phase | What happens |
+|---|-------|-------------|
+| 1 | Project Setup | Checks `.migration` dir, `page-templates.json`, workspace config |
+| 2 | Template Check | Reads schema, builds/validates homepage template |
+| 3 | Site Analysis | Creates template skeleton, 1 template per site |
+| 4 | Page Analysis | Scrapes the source URL, identifies sections, creates block variants, caches block context |
+| 5 | Block Mapping | Maps source sections → EDS block variants (5 blocks → 5 sections typical) |
+| 6 | Import Infrastructure | Generates parsers (1 per block) + site-wide transformers, bundles import script |
+| 7 | Content Import | Runs the bundled import script, produces `content/index.plain.html` and an Excel report |
+
+### Polling Strategy
+
+Poll every **30–60 seconds** (not faster — EMA sub-tasks run for 1–3 minutes each). Use snapshots, not screenshots, to read progress text efficiently:
+
+```bash
+playwright-cli snapshot --tab=<ema-tab> | grep -E "completed|thinking|Waiting|complete|failed|error"
+```
+
+Take a screenshot only when the task count advances or something notable happens.
+
+### Interactive Prompts ("Waiting for your input")
+
+EMA may pause and present a radio-button choice. **Do not answer these automatically** — surface them to the user first. Known prompts:
+
+- **"An existing migration plan for a different site was found. How should I proceed?"**
+  - Options: "Start fresh" / "Keep existing artifacts"
+  - Always ask the user before selecting. Default recommendation: "Start fresh" for a new migration.
+
+When the user confirms, select the radio and click "Submit answer":
 
 ```bash
 playwright-cli snapshot --tab=<ema-tab>
-playwright-cli screenshot --tab=<ema-tab> --filename=/tmp/ema-progress-<ts>.png
+# Find the radio ref and submit button ref
+playwright-cli click --tab=<ema-tab> <radio-ref>
+playwright-cli snapshot --tab=<ema-tab>   # re-snapshot before clicking submit
+playwright-cli click --tab=<ema-tab> <submit-ref>
 ```
 
-Log each status transition so you can report the full timeline to the user.
+### Key Status Signals to Report
+
+Report to the user when these milestones appear in the snapshot:
+
+- `Site Analysis complete — N template(s) created`
+- `Page Analysis complete — N sections identified, N new variants created (variant-a, variant-b, ...) and variant-c reused`
+- `Block Mapping complete — N blocks mapped to N sections`
+- `Import Infrastructure complete (N parsers + N transformers)`
+- `Import result: N/N succeeded, N failures`
+
+### Warning: Block Library Fetch Failing
+
+If you see: _"The block library fetch is failing — will create placeholder description files"_ — note this in your status report. It means EMA used WKND fallback examples instead of the project's sidekick library. Parser quality may be lower. Flag it in the final report.
 
 ### Error Handling
 
-If the EMA reports an error:
+If EMA reports an error:
 1. Screenshot the error state
 2. Read the error message from the snapshot
-3. Attempt to resolve if straightforward (e.g., re-enter a field, click retry)
+3. Attempt to resolve if straightforward (e.g., click retry)
 4. If unresolvable, report to the user with the error text and screenshot
 
 ---
 
-## Phase 3: Initial QA — Visual Comparison
+## Phase 3: Review Migration Output
 
-Once the EMA signals completion, capture both the source and the EDS preview for side-by-side comparison.
+When the import completes (7/7 tasks), EMA produces a structured summary. Read it carefully from the snapshot — it contains the block mapping decisions that drive all subsequent QA.
 
-### Step 3.1: Screenshot the EDS Preview
+### Step 3.1: Read the Block Mapping Summary
 
-The EMA typically shows a preview pane or provides a preview URL. Identify it from the snapshot:
-- Inline preview iframe → screenshot the iframe element
-- External preview URL → open in a new tab, full-page screenshot
+EMA's completion message lists:
+- Each source section and the block variant it was mapped to
+- Whether each variant is new or reused (with similarity %)
+- All generated artifacts and their paths
 
-```bash
-# If opening a separate preview tab:
-playwright-cli open <preview-url>
-# Capture targetId, then:
-playwright-cli screenshot --tab=<preview-tab> --fullPage --filename=/tmp/ema-eds-preview.png
+Extract and report this to the user before proceeding to QA. Example format:
+
+```
+**5 sections → 5 blocks:**
+1. Hero carousel → `carousel-banner` (new)
+2. News + promo tiles → `columns-news` (new)
+3. Three feature tiles → `cards-link` (reused, 88% similarity)
+4. Home page tabs → `tabs-home` (new)
+5. E-News signup + Connect With Us → `columns-toolbar` (new)
 ```
 
-### Step 3.2: Screenshot the Source Page
+### Step 3.2: Inspect the Generated Content
 
-Open the original source URL in a new tab for a fresh baseline:
+Open the imported content file in the EMA file browser, or read it via the GitHub API:
+
+```bash
+PAT=$(cat /workspace/secrets/github-pat.txt)
+# Get the raw content/index.plain.html from the repo
+curl -s -H "Authorization: Bearer $PAT" \
+  "https://api.github.com/repos/<owner>/<repo>/contents/content/index.plain.html" \
+  | jq -r '.content' | base64 -d | head -100
+```
+
+Check the block table structure for each block:
+- Does the number of columns match the EDS convention for that block type?
+- Is all expected content present (headings, body text, images, links)?
+- Are there any obviously malformed rows?
+
+### Step 3.3: Screenshot the Source Page
+
+Open the original source URL for visual baseline:
 
 ```bash
 playwright-cli open <source-url>
+# Capture targetId, then:
 playwright-cli screenshot --tab=<source-tab> --fullPage --filename=/tmp/ema-source.png
+open --view /tmp/ema-source.png
 ```
 
-### Step 3.3: Visual Diff Analysis
+### Step 3.4: Screenshot the EDS Preview
 
-View both screenshots:
+Construct the preview URL from the project settings:
+`https://main--<repo>--<owner>.aem.page/content/index`
 
 ```bash
-open --view /tmp/ema-source.png
-open --view /tmp/ema-eds-preview.png
+playwright-cli open <preview-url>
+playwright-cli screenshot --tab=<preview-tab> --fullPage --filename=/tmp/ema-preview.png
+open --view /tmp/ema-preview.png
 ```
 
-Systematically compare each region top-to-bottom:
-- **Navigation/Header** — logo position, links, layout, colors, fonts
-- **Hero/Banner** — headline, subtext, CTA buttons, background, imagery
-- **Content sections** — each block's layout, spacing, typography, colors
-- **Footer** — links, columns, copyright, background
+### Step 3.5: Visual Diff Analysis
+
+Compare both screenshots systematically top-to-bottom:
+
+| Region | Check |
+|--------|-------|
+| Navigation/Header | Logo position, links, layout, colors, fonts |
+| Hero/Banner | Headline, subtext, CTA buttons, background, imagery |
+| Each content block | Layout, column structure, spacing, typography, colors |
+| Footer | Links, columns, copyright, background |
 
 For each region, note:
-- ✅ Match (no visible difference)
-- ⚠️ Minor gap (spacing/color off slightly)
-- ❌ Major gap (layout broken, content missing, wrong font)
+- ✅ Match
+- ⚠️ Minor gap (spacing/color slightly off)
+- ❌ Major gap (layout broken, content missing, wrong structure)
 
 ---
 
 ## Phase 4: Iterative Refinement
 
-For each identified gap, issue a targeted refinement prompt to the EMA chat interface and re-evaluate. Tackle issues in this priority order:
+For each identified gap, issue a targeted refinement prompt to the EMA chat and re-evaluate. Tackle in this priority order:
 
-1. **Layout breaks** (columns collapsed, elements overlapping)
-2. **Missing content** (blocks absent, text not migrated)
-3. **Navigation/Header** issues
-4. **Footer** issues
-5. **Typography** (wrong font family, size, weight)
-6. **Colors** (background, text, link, button colors off)
-7. **Spacing** (padding/margin differences)
-8. **Imagery** (wrong image, missing alt text, sizing off)
+1. **Wrong block model** (section mapped to wrong block type)
+2. **Parser structure** (wrong rows/columns, missing content)
+3. **Missing content** (blocks absent, text not extracted)
+4. **Navigation/Header** issues
+5. **Footer** issues
+6. **Typography** (wrong font family, size, weight)
+7. **Colors** (background, text, link, button colors off)
+8. **Spacing** (padding/margin differences)
+9. **Imagery** (wrong image, missing alt text, sizing off)
 
-### Issuing a Refinement Prompt
-
-Locate the EMA chat/prompt input in the UI:
+### Sending a Refinement Prompt
 
 ```bash
 playwright-cli snapshot --tab=<ema-tab>
-# Find the chat input or refinement text area
 playwright-cli fill --tab=<ema-tab> <chat-input-ref> "<refinement-prompt>"
-playwright-cli press --tab=<ema-tab> Enter
-# Or click the send button
+playwright-cli snapshot --tab=<ema-tab>   # re-snapshot to get fresh send-button ref
+playwright-cli click --tab=<ema-tab> <send-button-ref>
 ```
 
 ### Refinement Prompt Templates
 
-Use specific, actionable prompts. Examples:
+**Wrong block model:**
+> "The `{section-name}` section was mapped to `{block-name}` but it should use `{correct-block}` instead. The content has {N} items each with an image, heading, and description — that's a collection pattern, not a {wrong-pattern}. Please remap and regenerate the parser."
 
-**Parser / content extraction:**
-> "The hero section is missing the subheading text. Update the parser to extract the `.hero-subtitle` element and include it in the hero block."
+**Parser structure — wrong columns:**
+> "The `{block-name}` parser is producing a single-column table. The source has {N} items side-by-side. Update the parser to output one row per item with columns: [image | heading | description | link]."
 
-**Transformer / block structure:**
-> "The cards block is rendering as a single column. The source uses a 3-column grid. Update the transformer to output 3 items per row."
+**Parser structure — missing content:**
+> "The `{block-name}` parser is not extracting the {element} text. The source selector is `{css-selector}`. Update the parser to include it as a new column in the block table."
 
-**Styles:**
-> "The heading font should be `{font-family}` at `{size}`. The current migration is using the wrong font. Update the styles to match."
+**Transformer issue:**
+> "The `{block-name}` transformer is wrapping images in an extra `<div>`. Remove the wrapper so images are direct children of their table cells."
 
 **Navigation:**
-> "The navigation is missing the dropdown menus. Update the nav parser to include the second-level link items."
+> "The navigation is missing the dropdown menus. Update the nav parser to include the second-level link items under each top-level nav item."
 
 **Footer:**
 > "The footer background color should be `{hex}`. Update the footer styles."
 
-**Specific block:**
-> "The `{block-name}` block has incorrect padding — source shows `{n}px` top/bottom, the preview shows `{n}px`. Adjust the block CSS."
+**Styles:**
+> "The heading font should be `{font-family}` at `{size}`. Update the styles to match the source."
 
 ### Refinement Loop
 
 After each prompt:
-1. Wait for EMA to process (monitor progress as in Phase 2)
+1. Monitor EMA progress (as in Phase 2) — refinement runs typically complete in 2–5 minutes
 2. Re-screenshot the preview
 3. Re-compare against source
-4. If gap is resolved → mark ✅ and move to next issue
-5. If gap persists → refine the prompt and try again (max 3 attempts per issue)
+4. If gap resolved → mark ✅ and move to next issue
+5. If gap persists → refine the prompt and retry (max 3 attempts per issue)
 
 Maximum **5 refinement rounds** total before surfacing remaining gaps to the user for manual review.
 
@@ -258,18 +332,19 @@ Maximum **5 refinement rounds** total before surfacing remaining gaps to the use
 
 ## Phase 5: Final Report
 
-After refinement rounds are exhausted or all gaps are resolved, produce a final report:
-
-### Summary Format
-
 ```
 ## EMA Migration Report: <source-url>
 
 **EDS Preview:** <preview-url>
 **Project:** <owner/repo>
+**Environment:** prod | stage
 
-### Results by Region
+### Block Mapping
+| Source Section | EDS Block | Status |
+|---------------|-----------|--------|
+| ... | ... | new / reused (N% similarity) |
 
+### QA Results
 | Region | Status | Notes |
 |--------|--------|-------|
 | Navigation | ✅ / ⚠️ / ❌ | ... |
@@ -280,24 +355,24 @@ After refinement rounds are exhausted or all gaps are resolved, produce a final 
 ### Refinement History
 - Round 1: <what was fixed>
 - Round 2: <what was fixed>
-...
+
+### Warnings
+- <e.g. block library URL not set — parser quality may be lower>
 
 ### Remaining Gaps
 - <description of any unresolved issues>
 
 ### Next Steps
-- <recommended manual follow-up actions, if any>
+- <recommended manual follow-up actions>
 ```
-
-Inline both the source and preview screenshots for the user to compare visually.
 
 ---
 
 ## Tab Management
 
-- Always track tab IDs you open: EMA tab, source tab, preview tab
-- Close source and preview tabs when the migration is complete
-- Never close the EMA tab unless the user asks — they may want to continue refining manually
+- Track tab IDs for: EMA tab, source tab, preview tab
+- Never close the EMA tab unless the user asks
+- Close source and preview tabs when done
 
 ```bash
 playwright-cli tab-close --tab=<source-tab>
@@ -310,7 +385,10 @@ playwright-cli tab-close --tab=<preview-tab>
 ## Notes for the Cone
 
 - This skill is **cone-only** — do not delegate to a scoop. The cone drives the browser directly.
-- EMA state is ephemeral in the browser — losing the tab loses the session. Keep the EMA tab open.
-- If the EMA UI changes (new navigation structure, renamed buttons), re-snapshot and adapt. Don't hardcode refs.
-- The EMA project is already configured (checked in pre-flight). Do not attempt to change the project mid-migration.
+- EMA state is ephemeral — losing the tab loses the session. Keep the EMA tab open throughout.
+- **Always re-snapshot before clicking** — refs are invalidated after every fill or navigation.
+- **Use `snapshot | grep`** for polling, not screenshots — faster and doesn't flood the conversation.
+- If the EMA UI changes (new nav structure, renamed buttons), re-snapshot and adapt. Never hardcode refs.
+- The EMA project is already configured (verified in pre-flight). Do not attempt to change it mid-migration.
 - Visual comparison is subjective — aim for ≥ 90% visual fidelity before declaring success.
+- The first phase focus is **content structure** — correct block model selection and parser row/column output. Visual styling comes after structure is confirmed correct.
