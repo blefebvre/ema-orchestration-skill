@@ -6,7 +6,22 @@ allowed-tools: bash
 
 # EMA-Migrate Skill
 
-Migrate a single URL to Edge Delivery Services by orchestrating the Experience Modernization Agent (EMA) at https://aemcoder.adobe.io/. The cone drives the EMA UI, monitors progress, performs QA via visual comparison, and issues targeted refinement prompts until the migration is pixel-perfect.
+Migrate a single URL to Edge Delivery Services by orchestrating the Experience Modernization Agent (EMA). The cone drives the EMA UI, monitors progress, performs QA via visual comparison, and issues targeted refinement prompts until the migration is pixel-perfect.
+
+## EMA Base URL
+
+The skill supports two deployments:
+
+| Environment | Base URL |
+|-------------|----------|
+| **prod** (default) | `https://aemcoder.adobe.io/` |
+| **stage** | `https://excat-stage.adobe.io/` |
+
+**Determine the environment from the user's request:**
+- If the user says "stage", "on stage", "using stage", or similar → use `https://excat-stage.adobe.io/`
+- Otherwise → use `https://aemcoder.adobe.io/` (prod)
+
+Store the resolved base URL as `{ema-base}` and substitute it for **every** EMA URL reference throughout this skill (settings page, home page, chat input, etc.). Never hardcode `aemcoder.adobe.io` after this point — always use `{ema-base}`.
 
 ## Trigger
 
@@ -14,6 +29,7 @@ Phrases like:
 - "Migrate the page `<URL>` to Edge Delivery using EMA"
 - "Use EMA to migrate `<URL>`"
 - "Run EMA migration on `<URL>`"
+- "Migrate `<URL>` using EMA on stage" → stage deployment
 
 The user provides a source URL. The target EDS project is read from the EMA settings (already configured).
 
@@ -21,24 +37,38 @@ The user provides a source URL. The target EDS project is read from the EMA sett
 
 ## Pre-Flight Checks
 
-Before starting a migration, verify the EMA environment is ready. Run these checks once per session (skip if already verified this session).
+Before starting a migration, **stop and confirm the following with the user**. Do not proceed until you have explicit confirmation on each point — these steps can cause data loss if skipped.
 
-### Check 1: EMA Login
+### Confirm 1: Fresh GitHub Repo
 
-Navigate to https://aemcoder.adobe.io/ and confirm the user is signed in (avatar/user menu visible in top-right banner).
+Ask the user:
+> "Have you created a new GitHub repo for this migration and configured it as your project in EMA settings? If not, do that first — go to {ema-base}settings and update the Project field."
+
+Wait for explicit confirmation before continuing.
+
+### Confirm 2: Clear EMA Chat Context
+
+Ask the user:
+> "Does the EMA chat have any previous conversation context? If so, please clear it before we start — previous context can interfere with the migration instructions. Let me know when the chat is clean."
+
+Wait for explicit confirmation before continuing.
+
+### Check 3: EMA Login (automated)
+
+Navigate to {ema-base} and confirm the user is signed in (avatar/user menu visible in top-right banner).
 
 ```bash
 playwright-cli tab-list
-# If a tab with aemcoder.adobe.io exists, snapshot it.
+# If a tab with {ema-base} exists, snapshot it.
 # If no tab exists, open one:
-playwright-cli open https://aemcoder.adobe.io/
+playwright-cli open {ema-base}
 ```
 
 If the page shows a login screen, ask the user to sign in and wait. Do not proceed until authenticated.
 
-### Check 2: GitHub Connected
+### Check 4: GitHub Connected (automated)
 
-Navigate to https://aemcoder.adobe.io/settings and snapshot the page.
+Navigate to {ema-base}settings and snapshot the page.
 
 Look for the GitHub section under **Project**:
 - Green indicator dot next to the GitHub username → connected ✓
@@ -46,7 +76,7 @@ Look for the GitHub section under **Project**:
 
 If not connected, click the GitHub connect button in the UI to initiate the OAuth flow, then wait for the green indicator before proceeding.
 
-### Check 3: Project Configured
+### Check 5: Project Configured (automated)
 
 From the settings snapshot, read:
 - **GitHub username** (e.g., `blefebvre`)
@@ -62,7 +92,7 @@ Store these values — you'll need them for QA comparison later.
 ### Step 1.1: Navigate to the Migrate/Home view
 
 ```bash
-playwright-cli goto --tab=<ema-tab> https://aemcoder.adobe.io/
+playwright-cli goto --tab=<ema-tab> {ema-base}
 # Or click the Home nav link if already on the app
 ```
 
