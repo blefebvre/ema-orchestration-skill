@@ -192,6 +192,44 @@ If EMA reports an error:
 
 ---
 
+## Phase 2.5: Verify Preview Pane
+
+After the 7/7 task completion, navigate to `{ema-base}chat/content/preview` to check the preview pane. This is where you evaluate the imported content structure before doing visual QA.
+
+```bash
+playwright-cli goto --tab=<ema-tab> {ema-base}chat/content/preview
+sleep 3
+playwright-cli screenshot --tab=<ema-tab> --filename=/tmp/ema-preview-pane.png
+open --view /tmp/ema-preview-pane.png
+```
+
+### Expected states
+
+**Healthy:** A page list appears on the left (e.g. "index") and clicking it shows the rendered preview on the right.
+
+**"No pages found" / "No HTML files available":** The preview pane UI has not synced with the repo. This does **not** necessarily mean the import failed — the file may exist in the repo but the preview pane hasn't picked it up. Distinguish the two cases:
+
+1. **Check if the file actually exists** — look for `content/index.plain.html` in EMA's completion message. If EMA reported "1/1 succeeded" and listed `content/index.plain.html` as an artifact, the file exists.
+
+2. **If the file exists but the preview pane is empty** — this is a UI sync issue. Send the following prompt to trigger a clean re-import (EMA will verify the file, delete it, and re-run to confirm the pipeline end-to-end):
+
+   > "No pages were imported. Please re-import the page and ensure a `index.plain.html` file is produced by the import infrastructure."
+
+   Monitor for completion (typically 1–2 minutes). After re-import, try reloading the page. If the preview pane still shows "No HTML files available" after a reload and re-import, note it as a known stage UI sync issue and proceed to inspect the file directly via the file browser tab (`{ema-base}chat/code/files`) or GitHub API instead.
+
+3. **If EMA reported failures** — the file genuinely wasn't produced. Use the same re-import prompt above, then monitor more carefully for errors in the task log.
+
+### Two preview pane messages — distinction
+
+| Message | Meaning |
+|---------|---------|
+| "No pages found" | Page list loaded but empty — UI hasn't synced yet |
+| "No HTML files available. Ask to migrate a webpage." | Preview pane hasn't loaded at all, or no `.plain.html` files registered |
+
+Both are recovered by the re-import prompt above. The re-import is fast (< 2 min) and idempotent — EMA reuses existing parsers/transformers.
+
+---
+
 ## Phase 3: Review Migration Output
 
 When the import completes (7/7 tasks), EMA produces a structured summary. Read it carefully from the snapshot — it contains the block mapping decisions that drive all subsequent QA.
